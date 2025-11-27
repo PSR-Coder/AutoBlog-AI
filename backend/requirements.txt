@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+requests
+beautifulsoup4
+lxml
+python-multipart
+pydantic
+feedparser
+aiohttp
+google-api-python-client
+google-auth

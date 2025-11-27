@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: autoblog-ai-backend
+    rootDir: backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: true
+    plan: free
+
+  - type: web
+    name: autoblog-ai-frontend
+    rootDir: .
+    buildCommand: "npm install && npm run build"
+    startCommand: "npm run preview"
+    envVars:
+      - key: NODE_VERSION
+        value: 18
+    plan: free
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

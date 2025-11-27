@@ -14,6 +14,17 @@ type Logger = (msg: string, type?: 'info' | 'success' | 'warning' | 'error') => 
 /**
  * UTILITIES
  */
+
+export async function testSource(url: string) {
+  const r = await fetch("https://your-backend.onrender.com/test-source", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url })
+  });
+
+  return r.json();
+}
+
 export const normalizeWpUrl = (url: string) => {
     if (!url) return "";
     let clean = url.trim().replace(/\/+$/, "");
