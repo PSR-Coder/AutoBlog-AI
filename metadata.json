@@ -1,0 +1,5 @@
+{
+  "name": "AutoBlog AI",
+  "description": "SaaS Automation Dashboard for content scraping, AI rewriting (Gemini), and WordPress publishing.",
+  "requestFramePermissions": []
+}
