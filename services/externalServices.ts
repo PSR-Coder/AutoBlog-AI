@@ -14,17 +14,6 @@ type Logger = (msg: string, type?: 'info' | 'success' | 'warning' | 'error') => 
 /**
  * UTILITIES
  */
-
-export async function testSource(url: string) {
-  const r = await fetch("https://your-backend.onrender.com/test-source", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url })
-  });
-
-  return r.json();
-}
-
 export const normalizeWpUrl = (url: string) => {
     if (!url) return "";
     let clean = url.trim().replace(/\/+$/, "");
@@ -468,72 +457,142 @@ export async function fetchRecentPosts(wpUrl: string, username: string, appPassw
     } catch { return []; }
 }
 
-export async function uploadImageFromUrl(wpUrl: string, username: string, appPassword: string, imageUrl: string, altText: string) {
+export async function uploadImageFromUrl(
+    wpUrl: string, 
+    username: string, 
+    appPassword: string, 
+    imageUrl: string, 
+    altText: string,
+    log?: Logger
+) {
     const cleanWp = normalizeWpUrl(wpUrl);
+    const auth = btoa(`${username}:${appPassword}`);
+    const logFn = (msg: string, type: 'info'|'success'|'warning'|'error' = 'info') => {
+        if (log) log(msg, type);
+    };
     
-    // Multi-Strategy Fetching (Direct -> Proxies)
+    // wsrv.nl is a robust Image CDN that returns CORS-enabled images
     const strategies = [
-        async () => {
-             // 1. Direct Fetch (Works if source CORS is open)
-             const r = await fetch(imageUrl);
-             if(!r.ok) throw new Error("Direct failed");
-             return r.blob();
+        {
+            name: "WsRv (Image CDN)",
+            url: `https://wsrv.nl/?url=${encodeURIComponent(imageUrl)}&output=jpg&n=-1`
         },
-        async () => {
-             // 2. CorsProxy
-             const r = await fetch(`https://corsproxy.io/?${encodeURIComponent(imageUrl)}`);
-             if(!r.ok) throw new Error("Proxy failed");
-             return r.blob();
+        {
+            name: "CorsProxy",
+            url: `https://corsproxy.io/?${encodeURIComponent(imageUrl)}`
         },
-        async () => {
-             // 3. AllOrigins (returns base64 in JSON)
-             const r = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(imageUrl)}`);
-             if(!r.ok) throw new Error("AllOrigins failed");
-             const json = await r.json();
-             const base64 = json.contents.split(',')[1];
-             const byteCharacters = atob(base64);
-             const byteNumbers = new Array(byteCharacters.length);
-             for (let i = 0; i < byteCharacters.length; i++) byteNumbers[i] = byteCharacters.charCodeAt(i);
-             return new Blob([new Uint8Array(byteNumbers)], {type: 'image/jpeg'});
+        {
+            name: "AllOrigins",
+            url: `https://api.allorigins.win/raw?url=${encodeURIComponent(imageUrl)}`
+        },
+        {
+             name: "CodeTabs",
+             url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(imageUrl)}`
         }
     ];
 
     let blob: Blob | null = null;
-    for (const strategy of strategies) {
+    
+    // 1. DOWNLOAD PHASE
+    for (const strat of strategies) {
         try {
-            blob = await strategy();
-            if (blob && blob.size > 100) break; 
-        } catch (e) { /* next */ }
+            logFn(`[Image] Downloading via ${strat.name}...`, 'info');
+            const res = await fetch(strat.url, { referrerPolicy: "no-referrer" });
+            
+            if (res.ok) {
+                const tempBlob = await res.blob();
+                if (tempBlob.size > 1000) {
+                    blob = tempBlob;
+                    logFn(`[Image] Download success! Size: ${Math.round(tempBlob.size/1024)}KB, Type: ${tempBlob.type}`, 'success');
+                    break;
+                } else {
+                    logFn(`[Image] ${strat.name} returned invalid data (${tempBlob.size} bytes)`, 'warning');
+                }
+            } else {
+                logFn(`[Image] ${strat.name} failed with status: ${res.status}`, 'warning');
+            }
+        } catch (e) {
+            logFn(`[Image] ${strat.name} exception: ${(e as Error).message}`, 'warning');
+        }
     }
 
-    if (!blob) return null;
+    if (!blob) {
+         logFn(`[Image] All download strategies failed. Cannot upload.`, 'error');
+         return null;
+    }
 
+    // 2. UPLOAD PHASE - DUAL STRATEGY
+    const ext = blob.type.split('/')[1] || 'jpg';
+    const safeName = `img-${Date.now()}.${ext}`; 
+    const endpoint = `${cleanWp}/wp-json/wp/v2/media`;
+
+    // STRATEGY A: RAW BINARY (Standard)
     try {
-        const fileName = imageUrl.split('/').pop()?.split('?')[0].substring(0,40) || 'image.jpg';
-        const uploadRes = await fetch(`${cleanWp}/wp-json/wp/v2/media`, {
+        logFn(`[Image] Attempting Upload Strategy A (Raw Binary)...`, 'info');
+        const uploadRes = await fetch(endpoint, {
             method: "POST",
             headers: {
-                "Authorization": "Basic " + btoa(`${username}:${appPassword}`),
-                "Content-Disposition": `attachment; filename="${fileName}"`,
-                "Content-Type": blob.type || 'image/jpeg'
+                "Authorization": "Basic " + auth,
+                "Content-Disposition": `attachment; filename="${safeName}"`,
+                "Content-Type": blob.type
             },
             body: blob
         });
-        const json = await uploadRes.json();
         
-        // Update Alt Text
-        if (json.id && altText) {
-             await fetch(`${cleanWp}/wp-json/wp/v2/media/${json.id}`, {
-                method: "POST",
-                headers: {
-                    "Authorization": "Basic " + btoa(`${username}:${appPassword}`),
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify({ alt_text: altText })
-             });
+        if (uploadRes.ok) {
+            const json = await uploadRes.json();
+            await updateImageAltText(cleanWp, auth, json.id, altText);
+            return json.id;
+        } else {
+            const err = await uploadRes.text();
+            logFn(`[Image] Strategy A failed: ${uploadRes.status}. Retrying with FormData...`, 'warning');
         }
-        return json.id;
-    } catch { return null; }
+    } catch (e) { 
+        logFn(`[Image] Strategy A exception: ${(e as Error).message}`, 'warning');
+    }
+
+    // STRATEGY B: FORM DATA (Hostinger/WAF Bypass)
+    try {
+        logFn(`[Image] Attempting Upload Strategy B (Multipart FormData)...`, 'info');
+        const formData = new FormData();
+        formData.append('file', blob, safeName);
+        if (altText) formData.append('alt_text', altText);
+        
+        const uploadRes = await fetch(endpoint, {
+            method: "POST",
+            headers: {
+                "Authorization": "Basic " + auth
+                // NOTE: Do NOT set Content-Type here, browser sets it with boundary for FormData
+            },
+            body: formData
+        });
+
+        if (uploadRes.ok) {
+            const json = await uploadRes.json();
+            return json.id;
+        } else {
+            const err = await uploadRes.text();
+            logFn(`[Image] Strategy B failed: ${uploadRes.status} - ${err.substring(0, 100)}`, 'error');
+            return null;
+        }
+    } catch (e) {
+        logFn(`[Image] Strategy B exception: ${(e as Error).message}`, 'error');
+        return null;
+    }
+}
+
+async function updateImageAltText(cleanWp: string, auth: string, id: number, altText: string) {
+    if (!id || !altText) return;
+    try {
+        await fetch(`${cleanWp}/wp-json/wp/v2/media/${id}`, {
+            method: "POST",
+            headers: {
+                "Authorization": "Basic " + auth,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ alt_text: altText })
+        });
+    } catch { /* ignore */ }
 }
 
 export async function publishToRealWordpress(

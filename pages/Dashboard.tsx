@@ -156,7 +156,8 @@ const Dashboard: React.FC = () => {
               campaign.wordpress_site.username,
               campaign.wordpress_site.application_password || '',
               articleImage,
-              altText
+              altText,
+              (msg, type) => addLog(msg, type) // Pass Logger
           );
           if (mediaId) {
               featuredMediaId = mediaId;
