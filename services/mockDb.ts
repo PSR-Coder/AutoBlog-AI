@@ -106,6 +106,7 @@ export const seedDefaults = () => {
         source_type: 'RSS',
         processing_mode: ProcessingMode.AI_REWRITE,
         ai_model: 'gemini-2.5-flash',
+        prompt_type: 'default',
         seo_plugin: SeoPlugin.YOAST,
         post_status: 'draft',
         schedule_days: [1, 2, 3, 4, 5], // Mon-Fri

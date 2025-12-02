@@ -20,51 +20,76 @@ export const rewriteContent = async (
   existingPostsContext: string = "",
   minWords: number = 600,
   maxWords: number = 1000,
-  model: string = 'gemini-2.5-flash'
+  model: string = 'gemini-2.5-flash',
+  customPrompt?: string
 ): Promise<AiResponse> => {
   const config = getConfig();
 
-  const systemPrompt = `
-    You are an expert SEO Content Writer and WordPress Specialist.
-    Your task is to take a source article and rewrite it into a highly engaging, readable blog post.
+  let systemPrompt = "";
 
-    SOURCE TITLE: "${sourceTitle}"
-    SOURCE CONTENT: "${originalContent.substring(0, 15000)}" 
+  const jsonInstruction = `
+    IMPORTANT: OUTPUT FORMAT MUST BE A VALID JSON OBJECT ONLY. DO NOT WRAP IN MARKDOWN.
     
-    EXISTING BLOG POSTS (Use these for internal linking if relevant):
-    ${existingPostsContext || "No existing posts available."}
-
-    STRICT READABILITY & STRUCTURE REQUIREMENTS:
-    1.  **Quick Summary:** Start the article immediately with a "<h3>Quick Summary</h3>" section containing 3-4 bullet points summarizing the key news.
-    2.  **Paragraph Length:** Keep paragraphs SHORT (maximum 3 sentences). Avoid walls of text.
-    3.  **Vocabulary:** Use simple, Grade 8 reading level English. Avoid complex words like "synergy", "arduous", "formidable".
-    4.  **Tone:** Engaging, Active Voice only. No Passive Voice.
-    5.  **Length:** Between ${minWords} and ${maxWords} words.
-    
-    SEO REQUIREMENTS:
-    1.  **Focus Keyphrase:** Derive the most potent SEO keyphrase from the source.
-    2.  **SEO Title:** Must start with the Focus Keyphrase. Max 60 chars.
-    3.  **Meta Description:** Must include the Focus Keyphrase. Max 155 chars.
-    4.  **Headings:** Use descriptive <h2> and <h3> tags. Do not use vague headers like "Introduction" or "Conclusion".
-    5.  **Pagination:** If the content exceeds ${maxWords} words, insert <!--nextpage--> tag once to split it naturally.
-    6.  **Featured Image Alt:** Provide a descriptive ALT TEXT for the featured image containing the keyphrase.
-    7.  **Internal Linking:** If relevant, hyperlink existing posts naturally. If not, add a "<h3>Also Read</h3>" list at the end.
-
-    OUTPUT FORMAT: JSON ONLY.
-
-    OUTPUT JSON STRUCTURE:
+    REQUIRED JSON STRUCTURE:
     {
-      "htmlContent": "<h3>Quick Summary</h3><ul>...</ul><p>...</p>",
+      "htmlContent": "<h1>Title...</h1><h3>Quick Summary</h3><ul>...</ul><p>...</p>",
       "seo": {
-        "focusKeyphrase": "...",
-        "seoTitle": "...",
-        "metaDescription": "...",
-        "slug": "...",
-        "imageAlt": "...",
+        "focusKeyphrase": "derived focus keyword",
+        "seoTitle": "Optimized SEO Title",
+        "metaDescription": "Optimized Meta Description (max 155 chars)",
+        "slug": "url-friendly-slug",
+        "imageAlt": "Descriptive Alt Text for featured image",
         "synonyms": "comma, separated, keywords"
       }
     }
   `;
+
+  if (customPrompt && customPrompt.trim().length > 10) {
+      // 1. USE CUSTOM PROMPT
+      let processedPrompt = customPrompt
+        .replace(/{{SOURCE_TITLE}}/g, sourceTitle)
+        .replace(/{{SOURCE_CONTENT}}/g, originalContent.substring(0, 15000));
+      
+      // Append context and JSON requirements
+      systemPrompt = `
+        ${processedPrompt}
+
+        EXISTING BLOG POSTS CONTEXT (For internal linking):
+        ${existingPostsContext || "No existing posts."}
+
+        ${jsonInstruction}
+      `;
+  } else {
+      // 2. USE DEFAULT PROMPT
+      systemPrompt = `
+        You are an expert SEO Content Writer and WordPress Specialist.
+        Your task is to take a source article and rewrite it into a highly engaging, readable blog post.
+
+        SOURCE TITLE: "${sourceTitle}"
+        SOURCE CONTENT: "${originalContent.substring(0, 15000)}" 
+        
+        EXISTING BLOG POSTS (Use these for internal linking if relevant):
+        ${existingPostsContext || "No existing posts available."}
+
+        STRICT READABILITY & STRUCTURE REQUIREMENTS:
+        1.  **Quick Summary:** Start the article immediately with a "<h3>Quick Summary</h3>" section containing 3-4 bullet points summarizing the key news.
+        2.  **Paragraph Length:** Keep paragraphs SHORT (maximum 3 sentences). Avoid walls of text.
+        3.  **Vocabulary:** Use simple, Grade 8 reading level English. Avoid complex words like "synergy", "arduous", "formidable".
+        4.  **Tone:** Engaging, Active Voice only. No Passive Voice.
+        5.  **Length:** Between ${minWords} and ${maxWords} words.
+        
+        SEO REQUIREMENTS:
+        1.  **Focus Keyphrase:** Derive the most potent SEO keyphrase from the source.
+        2.  **SEO Title:** Must start with the Focus Keyphrase. Max 60 chars.
+        3.  **Meta Description:** Must include the Focus Keyphrase. Max 155 chars.
+        4.  **Headings:** Use descriptive <h2> and <h3> tags. Do not use vague headers like "Introduction" or "Conclusion".
+        5.  **Pagination:** If the content exceeds ${maxWords} words, insert <!--nextpage--> tag once to split it naturally.
+        6.  **Featured Image Alt:** Provide a descriptive ALT TEXT for the featured image containing the keyphrase.
+        7.  **Internal Linking:** If relevant, hyperlink existing posts naturally. If not, add a "<h3>Also Read</h3>" list at the end.
+
+        ${jsonInstruction}
+      `;
+  }
 
   // --- OPENAI HANDLER ---
   if (model.startsWith('gpt')) {

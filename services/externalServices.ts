@@ -8,6 +8,7 @@ import { findLatestPostFromSitemap } from './sitemapService';
 const CORS_PROXY_PRIMARY = "https://corsproxy.io/?";
 const CORS_PROXY_SECONDARY = "https://api.allorigins.win/raw?url=";
 const CORS_PROXY_TERTIARY = "https://thingproxy.freeboard.io/fetch/";
+const CORS_PROXY_QUATERNARY = "https://api.codetabs.com/v1/proxy?quest=";
 
 type Logger = (msg: string, type?: 'info' | 'success' | 'warning' | 'error') => void;
 
@@ -84,7 +85,7 @@ const fetchWithProxyOnce = async (proxyPrefix: string, url: string): Promise<{ t
 };
 
 export const fetchWithProxy = async (url: string, retries = 1, baseDelay = 1000, log?: Logger): Promise<{ text: string; ok: boolean; status?: number; usedProxy?: string }> => {
-    const proxies = [CORS_PROXY_PRIMARY, CORS_PROXY_SECONDARY, CORS_PROXY_TERTIARY];
+    const proxies = [CORS_PROXY_QUATERNARY, CORS_PROXY_PRIMARY, CORS_PROXY_SECONDARY, CORS_PROXY_TERTIARY];
 
     try {
         const direct = await fetch(url);
@@ -186,7 +187,21 @@ const discoverAndFetchContent = async (baseUrl: string, log?: Logger): Promise<R
         const sitemapUrl = await findLatestPostFromSitemap(cleanBase, log);
         if (sitemapUrl) {
             if (log) log(`[Discovery] Found post via sitemap: ${sitemapUrl}`, 'success');
-            return await scrapeSinglePage(cleanBase, sitemapUrl, log);
+            const item = await scrapeSinglePage(cleanBase, sitemapUrl, log);
+            
+            // SOFT FAILURE: If item is null (scrape failed) but we have the URL, return partial result
+            // This is critical for AI Direct URL mode
+            if (!item) {
+                 if (log) log(`[Discovery] HTML Scrape failed, returning URL-only for AI Direct Mode.`, 'warning');
+                 return {
+                     title: '',
+                     link: sitemapUrl,
+                     content: '',
+                     pubDate: new Date().toISOString(),
+                     guid: sitemapUrl
+                 };
+            }
+            return item;
         }
     } catch (e) {
         if (log) log(`[Discovery] Sitemap strategy failed: ${e}`, 'warning');
@@ -497,11 +512,21 @@ export async function uploadImageFromUrl(
     for (const strat of strategies) {
         try {
             logFn(`[Image] Downloading via ${strat.name}...`, 'info');
-            const res = await fetch(strat.url, { referrerPolicy: "no-referrer" });
+            const res = await fetch(strat.url, { 
+                referrerPolicy: "no-referrer",
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                }
+            });
             
             if (res.ok) {
                 const tempBlob = await res.blob();
-                if (tempBlob.size > 1000) {
+                if (tempBlob.size > 500) {
+                    // Check if it's HTML (error page from cloudflare disguised as ok)
+                    if (tempBlob.type.includes('text/html')) {
+                        logFn(`[Image] ${strat.name} returned HTML error instead of image.`, 'warning');
+                        continue;
+                    }
                     blob = tempBlob;
                     logFn(`[Image] Download success! Size: ${Math.round(tempBlob.size/1024)}KB, Type: ${tempBlob.type}`, 'success');
                     break;
@@ -521,48 +546,29 @@ export async function uploadImageFromUrl(
          return null;
     }
 
-    // 2. UPLOAD PHASE - DUAL STRATEGY
-    const ext = blob.type.split('/')[1] || 'jpg';
+    // 2. UPLOAD PHASE - RESILIENT FORM DATA STRATEGY
+    // Dynamic Extension
+    const ext = blob.type === 'image/png' ? 'png' 
+              : blob.type === 'image/webp' ? 'webp' 
+              : blob.type === 'image/gif' ? 'gif' 
+              : 'jpg';
+    
     const safeName = `img-${Date.now()}.${ext}`; 
     const endpoint = `${cleanWp}/wp-json/wp/v2/media`;
 
-    // STRATEGY A: RAW BINARY (Standard)
     try {
-        logFn(`[Image] Attempting Upload Strategy A (Raw Binary)...`, 'info');
-        const uploadRes = await fetch(endpoint, {
-            method: "POST",
-            headers: {
-                "Authorization": "Basic " + auth,
-                "Content-Disposition": `attachment; filename="${safeName}"`,
-                "Content-Type": blob.type
-            },
-            body: blob
-        });
+        logFn(`[Image] Uploading using Multipart FormData (Resilient)...`, 'info');
         
-        if (uploadRes.ok) {
-            const json = await uploadRes.json();
-            await updateImageAltText(cleanWp, auth, json.id, altText);
-            return json.id;
-        } else {
-            const err = await uploadRes.text();
-            logFn(`[Image] Strategy A failed: ${uploadRes.status}. Retrying with FormData...`, 'warning');
-        }
-    } catch (e) { 
-        logFn(`[Image] Strategy A exception: ${(e as Error).message}`, 'warning');
-    }
-
-    // STRATEGY B: FORM DATA (Hostinger/WAF Bypass)
-    try {
-        logFn(`[Image] Attempting Upload Strategy B (Multipart FormData)...`, 'info');
         const formData = new FormData();
+        // 'file' is the standard field name for WP REST API
         formData.append('file', blob, safeName);
         if (altText) formData.append('alt_text', altText);
         
         const uploadRes = await fetch(endpoint, {
             method: "POST",
             headers: {
-                "Authorization": "Basic " + auth
-                // NOTE: Do NOT set Content-Type here, browser sets it with boundary for FormData
+                "Authorization": "Basic " + auth,
+                // Important: Do NOT set Content-Type, browser sets it with boundary
             },
             body: formData
         });
@@ -572,11 +578,30 @@ export async function uploadImageFromUrl(
             return json.id;
         } else {
             const err = await uploadRes.text();
-            logFn(`[Image] Strategy B failed: ${uploadRes.status} - ${err.substring(0, 100)}`, 'error');
+            // Fallback: Try Raw Binary if Form Data fails (unlikely, but safe)
+            logFn(`[Image] FormData upload failed (${uploadRes.status}). Trying Raw Binary...`, 'warning');
+            
+            const rawRes = await fetch(endpoint, {
+                method: "POST",
+                headers: {
+                    "Authorization": "Basic " + auth,
+                    "Content-Disposition": `attachment; filename="${safeName}"`,
+                    "Content-Type": blob.type || "image/jpeg"
+                },
+                body: blob
+            });
+            
+            if (rawRes.ok) {
+                const json = await rawRes.json();
+                await updateImageAltText(cleanWp, auth, json.id, altText);
+                return json.id;
+            }
+            
+            logFn(`[Image] Upload failed completely: ${err.substring(0, 100)}`, 'error');
             return null;
         }
     } catch (e) {
-        logFn(`[Image] Strategy B exception: ${(e as Error).message}`, 'error');
+        logFn(`[Image] Upload exception: ${(e as Error).message}`, 'error');
         return null;
     }
 }

@@ -2,7 +2,8 @@
 export enum ProcessingMode {
   AS_IS = 'AS_IS',
   AI_REWRITE = 'AI_REWRITE',
-  TRANSLATOR_SPIN = 'TRANSLATOR_SPIN'
+  TRANSLATOR_SPIN = 'TRANSLATOR_SPIN',
+  AI_URL_DIRECT = 'AI_URL_DIRECT'
 }
 
 export enum SeoPlugin {
@@ -46,6 +47,8 @@ export interface Campaign {
   // Logic
   processing_mode: ProcessingMode;
   ai_model?: string;
+  prompt_type: 'default' | 'custom';
+  custom_prompt?: string;
   
   // Content Length Configuration
   min_word_count?: number; 
