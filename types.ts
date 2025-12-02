@@ -44,6 +44,10 @@ export interface Campaign {
   source_url: string;
   source_type: 'RSS' | 'DIRECT';
   
+  // Filtering & History
+  start_date?: string; // ISO String
+  url_keywords?: string; // Comma separated "movienews, politics"
+
   // Logic
   processing_mode: ProcessingMode;
   ai_model?: string;

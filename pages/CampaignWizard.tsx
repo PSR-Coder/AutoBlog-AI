@@ -1,8 +1,9 @@
+
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { 
   Check, Rss, Settings as SettingsIcon, Calendar, UploadCloud, 
-  Globe, Zap, AlertCircle, Loader2, Clock, Save, ArrowLeft, LayoutTemplate, Link2
+  Globe, Zap, AlertCircle, Loader2, Clock, Save, ArrowLeft, LayoutTemplate, Link2, Filter
 } from 'lucide-react';
 import { ProcessingMode, SeoPlugin, Campaign, WordPressCategory, RssItem } from '../types';
 import { saveCampaign, getCampaign } from '../services/mockDb';
@@ -49,6 +50,8 @@ const CampaignWizard: React.FC = () => {
     name: '',
     source_url: '',
     source_type: 'RSS',
+    start_date: new Date().toISOString().split('T')[0], // Default to today
+    url_keywords: '',
     wordpress_site: { site_url: '', username: '', application_password: '', status: 'pending' },
     processing_mode: ProcessingMode.AS_IS,
     ai_model: 'gemini-2.5-flash',
@@ -284,6 +287,35 @@ const CampaignWizard: React.FC = () => {
                                 {testingSource ? <Loader2 size={16} className="animate-spin" /> : 'Test Source'}
                             </button>
                         </div>
+                    </div>
+                </div>
+
+                {/* --- NEW FILTERS --- */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-50 dark:bg-slate-800/30 p-4 rounded-lg border border-slate-200 dark:border-slate-700">
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1 flex items-center">
+                             <Calendar size={14} className="mr-1 text-slate-500"/> Start Processing From
+                        </label>
+                        <input
+                            type="datetime-local"
+                            value={formData.start_date ? formData.start_date.substring(0, 16) : ''}
+                            onChange={(e) => updateField('start_date', new Date(e.target.value).toISOString())}
+                            className="w-full px-4 py-2 border border-slate-300 dark:border-slate-700 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-white dark:bg-slate-950 text-slate-900 dark:text-white"
+                        />
+                        <p className="text-xs text-slate-500 mt-1">Only process posts published after this date.</p>
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1 flex items-center">
+                            <Filter size={14} className="mr-1 text-slate-500"/> URL Keyword Filter (Optional)
+                        </label>
+                        <input
+                            type="text"
+                            value={formData.url_keywords || ''}
+                            onChange={(e) => updateField('url_keywords', e.target.value)}
+                            placeholder="e.g., movienews, featured"
+                            className="w-full px-4 py-2 border border-slate-300 dark:border-slate-700 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-white dark:bg-slate-950 text-slate-900 dark:text-white"
+                        />
+                        <p className="text-xs text-slate-500 mt-1">Comma-separated. URL must contain at least one of these.</p>
                     </div>
                 </div>
 

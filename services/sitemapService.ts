@@ -79,7 +79,7 @@ const parseXml = (xmlStr: string): Document | null => {
 /**
  * CORE LOGIC
  */
-export const findLatestPostFromSitemap = async (baseUrl: string, log?: Logger): Promise<string | null> => {
+export const findCandidateUrlsFromSitemap = async (baseUrl: string, log?: Logger): Promise<{link: string, pubDate: string}[]> => {
     // Normalize URL
     let inputUrl = baseUrl.trim();
     if (!/^https?:\/\//i.test(inputUrl)) inputUrl = 'https://' + inputUrl;
@@ -121,17 +121,19 @@ export const findLatestPostFromSitemap = async (baseUrl: string, log?: Logger): 
 
     if (!sitemapIndexContent) {
         if (log) log(`[Sitemap] Could not find any standard sitemap file after trying all proxies.`, 'error');
-        return null;
+        return [];
     }
 
     const doc = parseXml(sitemapIndexContent);
     if (!doc) {
         if (log) log(`[Sitemap] Failed to parse XML content.`, 'error');
-        return null;
+        return [];
     }
 
     // 2. Is this an Index (contains <sitemap>) or a Leaf (contains <url>)?
     const sitemapTags = Array.from(doc.querySelectorAll('sitemap'));
+    let targetSitemapUrl = foundAtUrl;
+    let leafContent = sitemapIndexContent;
     
     if (sitemapTags.length > 0) {
         // --- INDEX LOGIC ---
@@ -154,86 +156,53 @@ export const findLatestPostFromSitemap = async (baseUrl: string, log?: Logger): 
 
         if (log) log(`[Sitemap] Filtered down to ${postMaps.length} 'post' sitemaps.`, 'info');
 
-        // Fallback: If filtering removed everything, rely on original list
         const candidates = postMaps.length > 0 ? postMaps : maps;
 
-        // --- ROBUST SORTING ALGORITHM (Gulte/Yoast Fix) ---
+        // Sort by Numeric Suffix (Latest Bucket)
         candidates.sort((a, b) => {
-            // 1. Numeric Suffix Extraction (The Score)
             const getSequenceNum = (str: string) => {
-                // Base Case: "post-sitemap.xml" is technically sequence #1
                 if (str.endsWith('/post-sitemap.xml')) return 1;
-
-                // Regex: (\d+) captures digits, \.xml$ ensures it's at the end
-                // This correctly handles "post-sitemap66.xml" -> 66
                 const match = str.match(/(\d+)\.xml$/);
                 return match ? parseInt(match[1], 10) : -1;
             };
-            
             const numA = getSequenceNum(a.loc);
             const numB = getSequenceNum(b.loc);
-
-            // If both have numbers, DESCENDING order (Higher Number = Newer Bucket)
             if (numA > -1 && numB > -1 && numA !== numB) {
                 return numB - numA; 
             }
-
-            // 2. Date Fallback (Newest LastMod wins)
             return b.lastmod - a.lastmod;
         });
 
-        if (candidates.length === 0) return null;
+        if (candidates.length === 0) return [];
         
-        const targetSitemapUrl = candidates[0].loc;
+        targetSitemapUrl = candidates[0].loc;
         if (log) log(`[Sitemap] Winner sitemap (Latest Bucket): ${targetSitemapUrl}`, 'success');
 
-        const subSitemapContent = await fetchString(targetSitemapUrl, log);
-        if (!subSitemapContent) {
+        const fetchedSub = await fetchString(targetSitemapUrl, log);
+        if (!fetchedSub) {
             if (log) log(`[Sitemap] Failed to fetch sub-sitemap: ${targetSitemapUrl}`, 'error');
-            return null;
+            return [];
         }
-        return parseLeafSitemap(subSitemapContent, log);
-
-    } else {
-        // --- LEAF LOGIC (It was already a url list) ---
+        leafContent = fetchedSub;
+    } 
+    else {
         if (log) log(`[Sitemap] Found direct leaf sitemap (contains <url>).`, 'info');
-        return parseLeafSitemap(sitemapIndexContent, log);
     }
-};
 
-const parseLeafSitemap = (xmlStr: string, log?: Logger): string | null => {
-    const doc = parseXml(xmlStr);
-    if (!doc) return null;
+    // --- LEAF PARSING ---
+    const leafDoc = parseXml(leafContent);
+    if (!leafDoc) return [];
 
-    const urls = Array.from(doc.querySelectorAll('url')).map(tag => {
+    const urls = Array.from(leafDoc.querySelectorAll('url')).map(tag => {
         const loc = tag.querySelector('loc')?.textContent || "";
         const lastmodStr = tag.querySelector('lastmod')?.textContent || "";
-        const lastmod = lastmodStr ? new Date(lastmodStr).getTime() : 0;
-        return { loc, lastmod };
+        // If lastmod is missing, we can't reliably filter by date, but we still return it
+        return { 
+            link: loc, 
+            pubDate: lastmodStr || new Date().toISOString() 
+        };
     });
 
-    if (urls.length === 0) {
-        if (log) log(`[Sitemap] No URLs found in sitemap.`, 'warning');
-        return null;
-    }
-
-    if (log) log(`[Sitemap] Found ${urls.length} URLs in sitemap. Sorting...`, 'info');
-
-    // --- LEAF SORTING ---
-    // Rule: New posts are usually appended at the end OR have the newest date.
-    
-    // Check if dates are valid
-    const hasDates = urls.some(u => u.lastmod > 0);
-
-    if (hasDates) {
-        // Sort Newest Date First
-        urls.sort((a, b) => b.lastmod - a.lastmod);
-        if (log) log(`[Sitemap] Picked latest by Date: ${urls[0].loc}`, 'success');
-        return urls[0].loc;
-    } else {
-        // If no dates, assume standard sitemap protocol: Latest is appended at bottom.
-        const winner = urls[urls.length - 1].loc;
-        if (log) log(`[Sitemap] Picked latest by Position (Last Item): ${winner}`, 'success');
-        return winner;
-    }
+    if (log) log(`[Sitemap] Found ${urls.length} URLs in sitemap.`, 'info');
+    return urls;
 };

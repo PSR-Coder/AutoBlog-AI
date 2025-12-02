@@ -1,6 +1,6 @@
 
 import { WordPressCategory, ProcessedPost, SeoPlugin, RssItem } from '../types';
-import { findLatestPostFromSitemap } from './sitemapService';
+import { findCandidateUrlsFromSitemap } from './sitemapService';
 
 /**
  * CONFIGURATION
@@ -176,133 +176,36 @@ export const fetchRealRssFeedMultiple = async (url: string, maxItems = 10): Prom
 };
 
 /**
- * DISCOVERY & HTML SCRAPING
+ * CANDIDATE DISCOVERY (List of URLs)
  */
-const discoverAndFetchContent = async (baseUrl: string, log?: Logger): Promise<RssItem | null> => {
-    const cleanBase = baseUrl.replace(/\/$/, '');
-    
-    // STRATEGY 1: SITEMAP DISCOVERY (Prioritized)
-    if (log) log(`[Discovery] Trying Strategy 1: Sitemap Traversal`, 'info');
+export const fetchCandidatesFromSource = async (url: string, type: 'RSS' | 'DIRECT', log?: Logger): Promise<{link: string, pubDate: string}[]> => {
+    let targetUrl = url.trim();
+    if (!/^https?:\/\//i.test(targetUrl)) targetUrl = 'https://' + targetUrl;
+
+    // STRATEGY 1: RSS Feed
+    if (type === 'RSS') {
+        const items = await fetchRealRssFeedMultiple(targetUrl, 50); // Fetch more items
+        if (!items) return [];
+        return items.map(item => ({ link: item.link, pubDate: item.pubDate }));
+    }
+
+    // STRATEGY 2: Sitemap (Prioritized for Direct)
     try {
-        const sitemapUrl = await findLatestPostFromSitemap(cleanBase, log);
-        if (sitemapUrl) {
-            if (log) log(`[Discovery] Found post via sitemap: ${sitemapUrl}`, 'success');
-            const item = await scrapeSinglePage(cleanBase, sitemapUrl, log);
-            
-            // SOFT FAILURE: If item is null (scrape failed) but we have the URL, return partial result
-            // This is critical for AI Direct URL mode
-            if (!item) {
-                 if (log) log(`[Discovery] HTML Scrape failed, returning URL-only for AI Direct Mode.`, 'warning');
-                 return {
-                     title: '',
-                     link: sitemapUrl,
-                     content: '',
-                     pubDate: new Date().toISOString(),
-                     guid: sitemapUrl
-                 };
-            }
-            return item;
-        }
+        const candidates = await findCandidateUrlsFromSitemap(targetUrl, log);
+        if (candidates.length > 0) return candidates;
     } catch (e) {
         if (log) log(`[Discovery] Sitemap strategy failed: ${e}`, 'warning');
     }
-
-    // STRATEGY 2: COMMON RSS PATTERNS
-    if (log) log(`[Discovery] Trying Strategy 2: Common RSS Patterns`, 'info');
-    const rssPatterns = [
-        'google_feeds.xml', 
-        'feed', 
-        'rss', 
-        'feed.xml', 
-        'rss.xml', 
-        'atom.xml',
-        'feed/index.xml'
-    ];
-
-    for (const pattern of rssPatterns) {
-        try {
-            const pathUrl = `${cleanBase}/${pattern}`;
-            let items = await fetchRealRssFeedMultiple(pathUrl, 1);
-            if (items && items.length > 0) {
-                 if (log) log(`[Discovery] Found RSS feed at: ${pathUrl}`, 'success');
-                 return items[0];
-            }
-        } catch (e) { /* ignore */ }
-    }
-
-    // STRATEGY 3: HTML SCRAPING (Home/Category Page Scanning)
-    if (log) log(`[Discovery] Trying Strategy 3: HTML Link Scanning`, 'info');
-    try {
-        const { text: listHtml, ok } = await fetchWithProxy(cleanBase, 1, 1000, log);
-        if (!ok || !listHtml) return null;
-
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(listHtml, 'text/html');
-
-        // Look for RSS link in head
-        const rssLink = doc.querySelector('link[rel="alternate"][type="application/rss+xml"]');
-        if (rssLink) {
-            const href = rssLink.getAttribute('href');
-            if (href) {
-                const feedUrl = absolutizeUrl(cleanBase, href);
-                if (log) log(`[Discovery] Found RSS link in HTML head: ${feedUrl}`, 'success');
-                const items = await fetchRealRssFeedMultiple(feedUrl, 1);
-                if (items && items.length > 0) return items[0];
-            }
-        }
-        
-        let selectors = [
-             '.post-box-title a', 
-             'article h2 a', 
-             'article h3 a', 
-             '.entry-title a', 
-             '.post-title a', 
-             '.news-card a', 
-             '.item-details a'
-        ];
-        const generalSelectors = ['h1 a', 'h2 a', 'h3 a'];
-        
-        const candidates = Array.from(doc.querySelectorAll([...selectors, ...generalSelectors].join(', ')));
-        
-        let bestLink: string | null = null;
-        let bestTextLen = 0;
-
-        for (const link of candidates) {
-            const href = link.getAttribute('href');
-            const text = link.textContent?.trim() || '';
-            
-            if (href && text.length > 10 && text.length > bestTextLen) {
-                if (!href.includes('comment') && !href.includes('#') && !href.includes('login') && !href.includes('signup')) {
-                    if (!link.closest('nav') && !link.closest('footer') && !link.closest('.sidebar') && !link.closest('.menu')) {
-                        if (link.closest('.post-box-title')) {
-                            bestLink = href;
-                            bestTextLen = text.length + 100; // Boost Gulte specific
-                        } else {
-                            if (text.length > bestTextLen) {
-                                bestLink = href;
-                                bestTextLen = text.length;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if (!bestLink) return null;
-        const articleUrl = absolutizeUrl(cleanBase, bestLink);
-        if (log) log(`[Discovery] Found article link via HTML scan: ${articleUrl}`, 'success');
-        
-        return await scrapeSinglePage(cleanBase, articleUrl, log);
-
-    } catch (e) {
-        return null;
-    }
+    
+    // STRATEGY 3: HTML Scrape (Fallback - only returns 1)
+    return []; // For now, we rely on sitemap for batch processing as HTML scraping is hard to paginate robustly without specific rules
 };
+
 
 /**
  * HELPER: Scrape a Single Page (Recursive for pagination)
  */
-const scrapeSinglePage = async (cleanBase: string, articleUrl: string, log?: Logger): Promise<RssItem | null> => {
+export const scrapeSinglePage = async (cleanBase: string, articleUrl: string, log?: Logger): Promise<RssItem | null> => {
     if (log) log(`[Scraper] Starting scrape of: ${articleUrl}`, 'info');
     
     const parser = new DOMParser();
@@ -325,26 +228,21 @@ const scrapeSinglePage = async (cleanBase: string, articleUrl: string, log?: Log
 
         const artDoc = parser.parseFromString(html, 'text/html');
         
-        // --- CLEAN UP DOM (Remove Video Players, Meta, etc) ---
+        // --- CLEAN UP DOM ---
         const unwantedSelectors = [
             'script', 'style', 'noscript', 'iframe', 'svg',
-            '.jwplayer', '.jw-player', '.video-container', '.sticky-video', '.video-wrapper', // Videos
-            '.post-meta', '.entry-meta', '.article-meta', '.author', '.byline', '.post-info', // Meta/Author
-            '.date', '.published', '.updated', '.time', '.entry-date', // Dates
-            '.share-buttons', '.social-icons', '.related-posts', '.social-share', // Social
-            '.ads', '.advertisement', '.ad-container', // Ads
-            '.sidebar', '#sidebar', '.widget-area' // Layout
+            '.jwplayer', '.jw-player', '.video-container', '.sticky-video', '.video-wrapper', 
+            '.post-meta', '.entry-meta', '.article-meta', '.author', '.byline', '.post-info', 
+            '.date', '.published', '.updated', '.time', '.entry-date',
+            '.share-buttons', '.social-icons', '.related-posts', '.social-share', 
+            '.ads', '.advertisement', '.ad-container', 
+            '.sidebar', '#sidebar', '.widget-area' 
         ];
-        
-        unwantedSelectors.forEach(sel => {
-            artDoc.querySelectorAll(sel).forEach(el => el.remove());
-        });
-        // --------------------------------------------------------
+        unwantedSelectors.forEach(sel => artDoc.querySelectorAll(sel).forEach(el => el.remove()));
 
         if (pagesFetched === 0) {
             finalTitle = artDoc.querySelector('h1')?.textContent || artDoc.title || '';
             finalImage = artDoc.querySelector('meta[property="og:image"]')?.getAttribute('content') || "";
-            // Fallback image scraping
             if (!finalImage) {
                  const firstImg = artDoc.querySelector('article img, .entry-content img');
                  if (firstImg) finalImage = firstImg.getAttribute('src') || "";
@@ -402,14 +300,17 @@ const scrapeSinglePage = async (cleanBase: string, articleUrl: string, log?: Log
 }
 
 export const fetchContentFromSource = async (url: string, type: 'RSS' | 'DIRECT', log?: Logger): Promise<RssItem | null> => {
-    let targetUrl = url.trim();
-    if (!/^https?:\/\//i.test(targetUrl)) targetUrl = 'https://' + targetUrl;
-    
-    if (type === 'RSS') {
-        const items = await fetchRealRssFeedMultiple(targetUrl, 1);
-        return items ? items[0] : null;
+    // Legacy support for test button (fetch 1)
+    const candidates = await fetchCandidatesFromSource(url, type, log);
+    if (candidates.length > 0) {
+        const item = await scrapeSinglePage(url, candidates[0].link, log);
+        if (item) return item;
+        // Fallback for AI Direct
+        return {
+             title: '', link: candidates[0].link, content: '', pubDate: candidates[0].pubDate, guid: candidates[0].link
+        };
     }
-    return discoverAndFetchContent(targetUrl, log);
+    return null;
 };
 
 export const testFetchSource = async (url: string, type: 'RSS' | 'DIRECT'): Promise<{ success: boolean; item?: RssItem; error?: string }> => {
@@ -522,7 +423,6 @@ export async function uploadImageFromUrl(
             if (res.ok) {
                 const tempBlob = await res.blob();
                 if (tempBlob.size > 500) {
-                    // Check if it's HTML (error page from cloudflare disguised as ok)
                     if (tempBlob.type.includes('text/html')) {
                         logFn(`[Image] ${strat.name} returned HTML error instead of image.`, 'warning');
                         continue;
@@ -547,7 +447,6 @@ export async function uploadImageFromUrl(
     }
 
     // 2. UPLOAD PHASE - RESILIENT FORM DATA STRATEGY
-    // Dynamic Extension
     const ext = blob.type === 'image/png' ? 'png' 
               : blob.type === 'image/webp' ? 'webp' 
               : blob.type === 'image/gif' ? 'gif' 
@@ -560,7 +459,6 @@ export async function uploadImageFromUrl(
         logFn(`[Image] Uploading using Multipart FormData (Resilient)...`, 'info');
         
         const formData = new FormData();
-        // 'file' is the standard field name for WP REST API
         formData.append('file', blob, safeName);
         if (altText) formData.append('alt_text', altText);
         
@@ -568,7 +466,6 @@ export async function uploadImageFromUrl(
             method: "POST",
             headers: {
                 "Authorization": "Basic " + auth,
-                // Important: Do NOT set Content-Type, browser sets it with boundary
             },
             body: formData
         });
@@ -578,7 +475,6 @@ export async function uploadImageFromUrl(
             return json.id;
         } else {
             const err = await uploadRes.text();
-            // Fallback: Try Raw Binary if Form Data fails (unlikely, but safe)
             logFn(`[Image] FormData upload failed (${uploadRes.status}). Trying Raw Binary...`, 'warning');
             
             const rawRes = await fetch(endpoint, {

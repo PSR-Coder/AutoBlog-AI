@@ -2,7 +2,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { getCampaigns, deleteCampaign, addProcessedPost, isUrlProcessed, saveCampaign } from '../services/mockDb';
-import { fetchContentFromSource, publishToRealWordpress, fetchRecentPosts, uploadImageFromUrl, validateScrapedContent } from '../services/externalServices';
+import { fetchCandidatesFromSource, scrapeSinglePage, publishToRealWordpress, fetchRecentPosts, uploadImageFromUrl, validateScrapedContent } from '../services/externalServices';
 import { Campaign, ProcessingMode, WorkerLog, ProcessedPost } from '../types';
 import { Play, Trash2, ExternalLink, XCircle, Edit, BarChart2, Clock } from 'lucide-react';
 import { rewriteContent } from '../services/geminiService';
@@ -96,225 +96,268 @@ const Dashboard: React.FC = () => {
     setLogs([]); // Clear logs for new run
     if (!isAuto) setShowLogModal(true); // Only show modal for manual runs
 
-    const postLogs: string[] = [];
-    let tokensUsed = 0;
-    
-    // Default fallback values
-    let articleTitle = "";
-    let articleUrl = "";
-    let articleContent = "";
-    let articleImage = "";
-    let finalStatus: ProcessedPost['status'] = 'fetched';
-    let targetLink: string | undefined = undefined;
-    let wordpressPostId: number | undefined = undefined;
-    
-    let seoData = {
-        focusKeyphrase: '',
-        seoTitle: '',
-        metaDescription: '',
-        slug: '',
-        imageAlt: '',
-        synonyms: ''
-    };
-
     try {
       // 1. Scheduler Check (Visual Log)
       addLog(`Checking schedule for campaign: ${campaign.name}...`);
-      // Update Last Run immediately to prevent double-triggering
+      // Update Last Run immediately
       const updatedCampaign = { ...campaign, last_run_at: new Date().toISOString() };
       saveCampaign(updatedCampaign);
       setCampaigns(getCampaigns()); // Refresh UI
 
-      // 2. Fetching
-      addLog(`Fetching content from: ${campaign.source_url} (${campaign.source_type || 'RSS'})...`, 'info');
+      // 2. Fetch Candidates
+      addLog(`Fetching candidate list from: ${campaign.source_url} (${campaign.source_type || 'RSS'})...`, 'info');
       
-      const rssItem = await fetchContentFromSource(
+      const candidates = await fetchCandidatesFromSource(
           campaign.source_url, 
           campaign.source_type || 'RSS',
-          (msg, type) => addLog(msg, type || 'info') // Pass Logger
+          (msg, type) => addLog(msg, type || 'info')
       );
+
+      if (candidates.length === 0) {
+          throw new Error("No candidates found in source.");
+      }
       
-      const isValidFetch = rssItem && (
-          campaign.processing_mode === ProcessingMode.AI_URL_DIRECT 
-          ? !!rssItem.link 
-          : (rssItem.title && rssItem.content)
-      );
+      addLog(`Found ${candidates.length} total candidates. Filtering...`, 'info');
 
-      if (isValidFetch && rssItem) {
-        if (isUrlProcessed(campaign.id, rssItem.link)) {
-             addLog(`Duplicate detected. Post already processed: "${rssItem.title || rssItem.link}"`, 'warning');
-             return; 
-        }
+      // 3. Filter Candidates
+      const startDate = campaign.start_date ? new Date(campaign.start_date).getTime() : 0;
+      const keywords = campaign.url_keywords ? campaign.url_keywords.split(',').map(k => k.trim().toLowerCase()).filter(Boolean) : [];
 
-        if (campaign.processing_mode !== ProcessingMode.AI_URL_DIRECT) {
-             if (!validateScrapedContent(rssItem.title, rssItem.content)) {
-                addLog(`Blocked Content Detected.`, 'error');
-                return;
-            }
-        }
+      const validCandidates = candidates.filter(c => {
+          // Date Filter
+          if (startDate > 0) {
+              const pubTime = new Date(c.pubDate).getTime();
+              if (pubTime < startDate) return false;
+          }
+          // Keyword Filter
+          if (keywords.length > 0) {
+              const urlLower = c.link.toLowerCase();
+              const hasKeyword = keywords.some(k => urlLower.includes(k));
+              if (!hasKeyword) return false;
+          }
+          // Duplicate Filter
+          if (isUrlProcessed(campaign.id, c.link)) return false;
 
-        addLog(`Found new article: "${rssItem.title || 'URL Mode'}"`, 'success');
-        articleTitle = rssItem.title;
-        articleUrl = rssItem.link;
-        articleContent = rssItem.content; 
-        articleImage = rssItem.imageUrl || "";
-        if (articleImage) addLog(`Found image: ${articleImage}`, 'info');
-        postLogs.push('Fetched article from source');
-      } else {
-        throw new Error(`Could not fetch valid items from source.`);
+          return true;
+      });
+
+      addLog(`Queue has ${validCandidates.length} new posts after filtering.`, 'info');
+
+      if (validCandidates.length === 0) {
+          addLog(`No new posts to process.`, 'success');
+          return;
       }
 
-      // 3. Processing
-      let finalHtml = articleContent;
-      let finalTitle = articleTitle;
-      let finalSlug = '';
-      let featuredMediaId: number | undefined = undefined;
+      // Sort by Date ASC (Oldest First) to catch up chronologically
+      validCandidates.sort((a, b) => new Date(a.pubDate).getTime() - new Date(b.pubDate).getTime());
 
-      // MODE A: AS IS
-      if (campaign.processing_mode === ProcessingMode.AS_IS) {
-        addLog('Mode AS_IS: Skipping processing.', 'info');
-      } 
+      // 4. Process Loop
+      // We will process posts one by one until we hit a limit or empty the queue
+      let processedCount = 0;
+      const BATCH_LIMIT = 5; // Safety limit per run to avoid browser timeouts
       
-      // MODE B: AI REWRITE
-      else if (campaign.processing_mode === ProcessingMode.AI_REWRITE) {
-        addLog('Fetching recent posts for internal linking context...', 'info');
-        const recentPosts = await fetchRecentPosts(
-            campaign.wordpress_site.site_url,
-            campaign.wordpress_site.username,
-            campaign.wordpress_site.application_password || ''
-        );
-        const recentPostsStr = recentPosts.map((p: any) => `- ${p.title} (${p.link})`).join('\n');
+      for (const candidate of validCandidates) {
+          if (processedCount >= BATCH_LIMIT) {
+              addLog(`Batch limit (${BATCH_LIMIT}) reached. Stopping run. Scheduler will pick up next batch.`, 'warning');
+              break;
+          }
 
-        addLog(`Mode AI_REWRITE: Rewriting via ${campaign.ai_model || 'gemini'}...`, 'info');
-        
-        const customPrompt = campaign.prompt_type === 'custom' ? campaign.custom_prompt : undefined;
-        
-        const aiResult = await rewriteContent(
-            articleContent, 
-            articleTitle, 
-            recentPostsStr,
-            campaign.min_word_count || 600,
-            campaign.max_word_count || 1000,
-            campaign.ai_model || 'gemini-2.5-flash',
-            customPrompt
-        );
+          addLog(`Processing: ${candidate.link}`, 'info');
           
-        finalHtml = aiResult.htmlContent;
-        seoData = aiResult.seo;
-        finalTitle = seoData.seoTitle || articleTitle;
-        finalSlug = seoData.slug;
-        
-        tokensUsed = Math.floor(finalHtml.length / 4) + 150;
-        
-        addLog('AI Rewrite Successful.', 'success');
-        addLog(`Focus Keyphrase: "${seoData.focusKeyphrase}"`, 'success');
-        postLogs.push(`Rewritten by ${campaign.ai_model}`);
-        finalStatus = 'rewritten';
+          // -- PROCESS SINGLE POST --
+          await processSinglePost(campaign, candidate.link, addLog);
+          // -------------------------
+          
+          processedCount++;
+          // Small delay between posts
+          await new Promise(resolve => setTimeout(resolve, 2000));
       }
 
-      // MODE C: AI URL DIRECT
-      else if (campaign.processing_mode === ProcessingMode.AI_URL_DIRECT) {
-        addLog(`Mode AI_URL_DIRECT: Analyzing URL via ${campaign.ai_model || 'gemini'}...`, 'info');
-        
-        const customPrompt = campaign.prompt_type === 'custom' ? campaign.custom_prompt : undefined;
-        
-        const aiResult = await generatePostFromUrl(
-            articleUrl,
-            campaign.min_word_count || 600,
-            campaign.max_word_count || 1000,
-            campaign.ai_model || 'gemini-2.5-flash',
-            customPrompt
-        );
-        
-        finalHtml = aiResult.htmlContent;
-        seoData = aiResult.seo;
-        finalTitle = seoData.seoTitle || articleTitle;
-        finalSlug = seoData.slug;
-        
-        tokensUsed = 1000;
-        
-        addLog('AI Generation Successful.', 'success');
-        addLog(`Derived Keyphrase: "${seoData.focusKeyphrase}"`, 'success');
-        postLogs.push(`Generated from URL via ${campaign.ai_model}`);
-        finalStatus = 'rewritten';
-      }
-
-      // 4. Image Upload
-      if (articleImage) {
-          addLog(`Uploading featured image to WordPress...`, 'info');
-          const altText = seoData.imageAlt || `${seoData.focusKeyphrase || articleTitle} - Featured Image`;
-          const mediaId = await uploadImageFromUrl(
-              campaign.wordpress_site.site_url,
-              campaign.wordpress_site.username,
-              campaign.wordpress_site.application_password || '',
-              articleImage,
-              altText,
-              (msg, type) => addLog(msg, type)
-          );
-          if (mediaId) {
-              featuredMediaId = mediaId;
-              addLog(`Image uploaded successfully (ID: ${mediaId})`, 'success');
-          } else {
-              addLog(`STRICT MODE: Image upload failed. Aborting.`, 'error');
-              throw new Error("Image upload failed in Strict Mode. Check WP permissions or image source.");
-          }
-      }
-
-      // 5. Publishing
-      addLog(`Publishing to WordPress...`, 'info');
-      
-      const publishResult = await publishToRealWordpress(
-          campaign.wordpress_site.site_url,
-          campaign.wordpress_site.username,
-          campaign.wordpress_site.application_password || '',
-          {
-              title: finalTitle,
-              content: finalHtml,
-              status: campaign.post_status,
-              categories: campaign.target_category_id ? [campaign.target_category_id] : [],
-              slug: finalSlug,
-              featuredMediaId: featuredMediaId,
-              seo: {
-                  plugin: campaign.seo_plugin,
-                  focusKeyphrase: seoData.focusKeyphrase,
-                  seoTitle: seoData.seoTitle,
-                  metaDescription: seoData.metaDescription,
-                  synonyms: seoData.synonyms
-              }
-          }
-      );
-
-      if (publishResult.success) {
-          addLog(`Successfully published to WordPress! (ID: ${publishResult.id})`, 'success');
-          finalStatus = campaign.post_status === 'publish' ? 'published' : 'draft';
-          targetLink = publishResult.link;
-          wordpressPostId = publishResult.id;
-          postLogs.push(`Posted to WP as ${finalStatus}`);
-      } else {
-          throw new Error(publishResult.error);
-      }
-
-      addLog('Campaign Run Completed Successfully.', 'success');
-
-      const newPost: ProcessedPost = {
-        id: crypto.randomUUID(),
-        campaign_id: campaign.id,
-        wordpress_post_id: wordpressPostId,
-        title: articleTitle,
-        source_url: articleUrl,
-        target_url: targetLink,
-        status: finalStatus as any,
-        tokens_used: tokensUsed,
-        created_at: new Date().toISOString(),
-        logs: postLogs
-      };
-      addProcessedPost(newPost);
+      addLog(`Batch Run Completed. Processed ${processedCount} posts.`, 'success');
 
     } catch (error) {
       addLog(`Process Failed: ${(error as Error).message}`, 'error');
     } finally {
       setRunningId(null);
     }
+  };
+
+  // Helper to keep runSimulation clean
+  const processSinglePost = async (campaign: Campaign, url: string, log: typeof addLog) => {
+      const postLogs: string[] = [];
+      let tokensUsed = 0;
+      let articleTitle = "";
+      let articleContent = "";
+      let articleImage = "";
+      let finalStatus: ProcessedPost['status'] = 'fetched';
+      let targetLink: string | undefined = undefined;
+      let wordpressPostId: number | undefined = undefined;
+
+      let seoData = {
+        focusKeyphrase: '',
+        seoTitle: '',
+        metaDescription: '',
+        slug: '',
+        imageAlt: '',
+        synonyms: ''
+      };
+
+      try {
+          // A. Fetch Details
+          // If Direct URL Mode, we skip scraping content
+          if (campaign.processing_mode === ProcessingMode.AI_URL_DIRECT) {
+               articleTitle = "Pending AI Generation"; 
+               articleContent = "";
+               // Still try to scrape image if possible? 
+               // For now, we rely on Gemini to read it or minimal scrape
+               // Let's do a minimal scrape just for image
+               const scraped = await scrapeSinglePage(campaign.source_url, url, (m, t) => {});
+               if (scraped) articleImage = scraped.imageUrl || "";
+          } else {
+               const scraped = await scrapeSinglePage(campaign.source_url, url, (msg, type) => log(msg, type || 'info'));
+               if (!scraped) throw new Error("Failed to scrape content");
+               
+               if (!validateScrapedContent(scraped.title, scraped.content)) throw new Error("Blocked content detected");
+               
+               articleTitle = scraped.title;
+               articleContent = scraped.content;
+               articleImage = scraped.imageUrl || "";
+               log(`Scraped Title: "${articleTitle}"`, 'success');
+          }
+
+          // B. AI Processing
+          let finalHtml = articleContent;
+          let finalTitle = articleTitle;
+          let finalSlug = '';
+          let featuredMediaId: number | undefined = undefined;
+
+          if (campaign.processing_mode === ProcessingMode.AS_IS) {
+               // No Change
+          }
+          else if (campaign.processing_mode === ProcessingMode.AI_REWRITE) {
+                log('Fetching recent posts for internal linking context...', 'info');
+                const recentPosts = await fetchRecentPosts(
+                    campaign.wordpress_site.site_url,
+                    campaign.wordpress_site.username,
+                    campaign.wordpress_site.application_password || ''
+                );
+                const recentPostsStr = recentPosts.map((p: any) => `- ${p.title} (${p.link})`).join('\n');
+
+                log(`Mode AI_REWRITE: Rewriting via ${campaign.ai_model || 'gemini'}...`, 'info');
+                
+                const customPrompt = campaign.prompt_type === 'custom' ? campaign.custom_prompt : undefined;
+                
+                const aiResult = await rewriteContent(
+                    articleContent, 
+                    articleTitle, 
+                    recentPostsStr,
+                    campaign.min_word_count || 600,
+                    campaign.max_word_count || 1000,
+                    campaign.ai_model || 'gemini-2.5-flash',
+                    customPrompt
+                );
+                  
+                finalHtml = aiResult.htmlContent;
+                seoData = aiResult.seo;
+                finalTitle = seoData.seoTitle || articleTitle;
+                finalSlug = seoData.slug;
+                tokensUsed = Math.floor(finalHtml.length / 4) + 150;
+                log('AI Rewrite Successful.', 'success');
+                finalStatus = 'rewritten';
+          }
+          else if (campaign.processing_mode === ProcessingMode.AI_URL_DIRECT) {
+                log(`Mode AI_URL_DIRECT: Analyzing URL...`, 'info');
+                const customPrompt = campaign.prompt_type === 'custom' ? campaign.custom_prompt : undefined;
+                
+                const aiResult = await generatePostFromUrl(
+                    url,
+                    campaign.min_word_count || 600,
+                    campaign.max_word_count || 1000,
+                    campaign.ai_model || 'gemini-2.5-flash',
+                    customPrompt
+                );
+                
+                finalHtml = aiResult.htmlContent;
+                seoData = aiResult.seo;
+                finalTitle = seoData.seoTitle || articleTitle;
+                finalSlug = seoData.slug;
+                tokensUsed = 1000;
+                log('AI Generation Successful.', 'success');
+                finalStatus = 'rewritten';
+          }
+
+          // C. Image Upload
+          if (articleImage) {
+              log(`Uploading featured image...`, 'info');
+              const altText = seoData.imageAlt || `${seoData.focusKeyphrase || articleTitle} - Featured Image`;
+              const mediaId = await uploadImageFromUrl(
+                  campaign.wordpress_site.site_url,
+                  campaign.wordpress_site.username,
+                  campaign.wordpress_site.application_password || '',
+                  articleImage,
+                  altText,
+                  (msg, type) => log(msg, type)
+              );
+              if (mediaId) {
+                  featuredMediaId = mediaId;
+                  log(`Image uploaded (ID: ${mediaId})`, 'success');
+              } else {
+                  log(`STRICT MODE: Image upload failed. Aborting Post.`, 'error');
+                  throw new Error("Strict Mode: Image upload failed.");
+              }
+          }
+
+          // D. Publish
+          log(`Publishing to WordPress...`, 'info');
+          const publishResult = await publishToRealWordpress(
+              campaign.wordpress_site.site_url,
+              campaign.wordpress_site.username,
+              campaign.wordpress_site.application_password || '',
+              {
+                  title: finalTitle,
+                  content: finalHtml,
+                  status: campaign.post_status,
+                  categories: campaign.target_category_id ? [campaign.target_category_id] : [],
+                  slug: finalSlug,
+                  featuredMediaId: featuredMediaId,
+                  seo: {
+                      plugin: campaign.seo_plugin,
+                      focusKeyphrase: seoData.focusKeyphrase,
+                      seoTitle: seoData.seoTitle,
+                      metaDescription: seoData.metaDescription,
+                      synonyms: seoData.synonyms
+                  }
+              }
+          );
+
+          if (publishResult.success) {
+              log(`Published! (ID: ${publishResult.id})`, 'success');
+              finalStatus = campaign.post_status === 'publish' ? 'published' : 'draft';
+              targetLink = publishResult.link;
+              wordpressPostId = publishResult.id;
+              postLogs.push(`Posted to WP as ${finalStatus}`);
+          } else {
+              throw new Error(publishResult.error);
+          }
+
+          // E. Save Record
+          const newPost: ProcessedPost = {
+            id: crypto.randomUUID(),
+            campaign_id: campaign.id,
+            wordpress_post_id: wordpressPostId,
+            title: articleTitle || finalTitle,
+            source_url: url,
+            target_url: targetLink,
+            status: finalStatus as any,
+            tokens_used: tokensUsed,
+            created_at: new Date().toISOString(),
+            logs: postLogs
+          };
+          addProcessedPost(newPost);
+
+      } catch (e) {
+          log(`Skipping Post: ${(e as Error).message}`, 'error');
+      }
   };
 
   return (
