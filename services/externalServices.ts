@@ -197,8 +197,7 @@ export const fetchCandidatesFromSource = async (url: string, type: 'RSS' | 'DIRE
         if (log) log(`[Discovery] Sitemap strategy failed: ${e}`, 'warning');
     }
     
-    // STRATEGY 3: HTML Scrape (Fallback - only returns 1)
-    return []; // For now, we rely on sitemap for batch processing as HTML scraping is hard to paginate robustly without specific rules
+    return []; 
 };
 
 
@@ -300,7 +299,6 @@ export const scrapeSinglePage = async (cleanBase: string, articleUrl: string, lo
 }
 
 export const fetchContentFromSource = async (url: string, type: 'RSS' | 'DIRECT', log?: Logger): Promise<RssItem | null> => {
-    // Legacy support for test button (fetch 1)
     const candidates = await fetchCandidatesFromSource(url, type, log);
     if (candidates.length > 0) {
         const item = await scrapeSinglePage(url, candidates[0].link, log);
@@ -539,10 +537,14 @@ export async function publishToRealWordpress(
              _yoast_wpseo_metadesc: payload.seo.metaDescription,
              _yoast_wpseo_title: payload.seo.seoTitle,
              _yoast_wpseo_focuskw_text_input: payload.seo.focusKeyphrase,
-             _yoast_wpseo_desc: payload.seo.metaDescription // Fallback for some versions
+             _yoast_wpseo_desc: payload.seo.metaDescription
          };
+         
+         // Synonyms handling (Max compatibility)
          if (payload.seo.synonyms) {
             body.meta._yoast_wpseo_focuskw_synonyms = payload.seo.synonyms;
+            // Legacy/Alternate key used by some versions
+            body.meta._yoast_wpseo_keywordsynonyms = payload.seo.synonyms; 
          }
     }
 

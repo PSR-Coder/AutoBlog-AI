@@ -23,7 +23,7 @@ export const generatePostFromUrl = async (
     
     The JSON must match this structure:
     {
-      "htmlContent": "<h1>Title...</h1><p>...</p>",
+      "htmlContent": "<p>Content...</p>",
       "seo": {
         "focusKeyphrase": "derived keyword",
         "seoTitle": "The Click-Worthy Title",
@@ -35,12 +35,23 @@ export const generatePostFromUrl = async (
     }
   `;
 
+  // Conditional Logic for "Quick Summary"
+  const includeSummary = maxWords >= 600;
+  const summaryInstruction = includeSummary 
+    ? `- Include a short "Key Takeaways" bulleted list after the first paragraph.`
+    : `- Do NOT include a "Key Takeaways" or Summary section. Start directly with the main content.`;
+
   if (customPrompt && customPrompt.trim().length > 10) {
       // 1. USE CUSTOM PROMPT
       let processedPrompt = customPrompt.replace(/{{SOURCE_URL}}/g, sourceUrl);
       
       systemPrompt = `
         ${processedPrompt}
+
+        IMPORTANT:
+        - DO NOT include an <h1> tag for the Title in the 'htmlContent'.
+        - Output strictly valid JSON.
+        
         ${jsonInstruction}
       `;
   } else {
@@ -58,10 +69,11 @@ export const generatePostFromUrl = async (
         3. Requirement: Use the Primary Keyword naturally in the very first sentence.
         4. Title: Write a click-worthy H1 title (max 60 characters) that includes the keyword.
         5. Length: Between ${minWords} and ${maxWords} words.
+        6. No Duplicate Title: DO NOT include the <h1> Title in the 'htmlContent'. The CMS handles the title. Start directly with the body text.
         
         Structure:
         - Write the body in HTML format (use <h2>, <p>, <ul>, <li>, <strong>).
-        - Include a short "Key Takeaways" bulleted list after the first paragraph.
+        ${summaryInstruction}
         - Use <strong> tags to bold names of actors and key release dates.
         - Tone: Enthusiastic but factual. Avoid robotic phrases like "delving into" or "testament to."
 

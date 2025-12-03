@@ -32,7 +32,7 @@ export const rewriteContent = async (
     
     REQUIRED JSON STRUCTURE:
     {
-      "htmlContent": "<h1>Title...</h1><h3>Quick Summary</h3><ul>...</ul><p>...</p>",
+      "htmlContent": "<p>First paragraph...</p><h2>Subheading</h2>...",
       "seo": {
         "focusKeyphrase": "derived focus keyword",
         "seoTitle": "Optimized SEO Title",
@@ -43,6 +43,12 @@ export const rewriteContent = async (
       }
     }
   `;
+
+  // Conditional Logic for "Quick Summary"
+  const includeSummary = maxWords >= 600;
+  const summaryInstruction = includeSummary 
+    ? `1. **Quick Summary:** Start the article body with a "<h3>Quick Summary</h3>" section containing 3-4 bullet points.`
+    : `1. **No Summary:** Do NOT include a Quick Summary or Key Takeaways section. Start directly with the intro paragraph.`;
 
   if (customPrompt && customPrompt.trim().length > 10) {
       // 1. USE CUSTOM PROMPT
@@ -56,6 +62,10 @@ export const rewriteContent = async (
 
         EXISTING BLOG POSTS CONTEXT (For internal linking):
         ${existingPostsContext || "No existing posts."}
+
+        IMPORTANT FORMATTING RULES:
+        1. DO NOT include an <h1> tag for the title. The title is handled separately. Start content with <h3> or <p>.
+        2. Output strictly valid HTML for the body content.
 
         ${jsonInstruction}
       `;
@@ -72,11 +82,12 @@ export const rewriteContent = async (
         ${existingPostsContext || "No existing posts available."}
 
         STRICT READABILITY & STRUCTURE REQUIREMENTS:
-        1.  **Quick Summary:** Start the article immediately with a "<h3>Quick Summary</h3>" section containing 3-4 bullet points summarizing the key news.
-        2.  **Paragraph Length:** Keep paragraphs SHORT (maximum 3 sentences). Avoid walls of text.
-        3.  **Vocabulary:** Use simple, Grade 8 reading level English. Avoid complex words like "synergy", "arduous", "formidable".
-        4.  **Tone:** Engaging, Active Voice only. No Passive Voice.
-        5.  **Length:** Between ${minWords} and ${maxWords} words.
+        ${summaryInstruction}
+        2. **Paragraph Length:** Keep paragraphs SHORT (maximum 3 sentences). Avoid walls of text.
+        3. **Vocabulary:** Use simple, Grade 8 reading level English. Avoid complex words like "synergy", "arduous", "formidable".
+        4. **Tone:** Engaging, Active Voice only. No Passive Voice.
+        5. **Length:** Between ${minWords} and ${maxWords} words.
+        6. **No Title in Body:** DO NOT include the H1 Title in the 'htmlContent'. I will add it via the CMS. Start directly with the content.
         
         SEO REQUIREMENTS:
         1.  **Focus Keyphrase:** Derive the most potent SEO keyphrase from the source.
@@ -86,6 +97,7 @@ export const rewriteContent = async (
         5.  **Pagination:** If the content exceeds ${maxWords} words, insert <!--nextpage--> tag once to split it naturally.
         6.  **Featured Image Alt:** Provide a descriptive ALT TEXT for the featured image containing the keyphrase.
         7.  **Internal Linking:** If relevant, hyperlink existing posts naturally. If not, add a "<h3>Also Read</h3>" list at the end.
+        8.  **Synonyms:** Identify 2-3 related keywords or synonyms for the focus keyphrase.
 
         ${jsonInstruction}
       `;
