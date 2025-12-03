@@ -127,3 +127,34 @@ export const seedDefaults = () => {
     localStorage.setItem(CAMPAIGNS_KEY, JSON.stringify(seed));
   }
 };
+
+// --- Import / Export ---
+
+export const exportDatabase = (): string => {
+  const data = {
+    config: getConfig(),
+    campaigns: getCampaigns(),
+    processedPosts: getAllProcessedPosts(),
+    exportedAt: new Date().toISOString()
+  };
+  return JSON.stringify(data, null, 2);
+};
+
+export const importDatabase = (jsonStr: string): boolean => {
+  try {
+    const data = JSON.parse(jsonStr);
+    if (data.campaigns && Array.isArray(data.campaigns)) {
+      localStorage.setItem(CAMPAIGNS_KEY, JSON.stringify(data.campaigns));
+    }
+    if (data.processedPosts && Array.isArray(data.processedPosts)) {
+      localStorage.setItem(PROCESSED_POSTS_KEY, JSON.stringify(data.processedPosts));
+    }
+    if (data.config) {
+      localStorage.setItem(CONFIG_KEY, JSON.stringify(data.config));
+    }
+    return true;
+  } catch (e) {
+    console.error("Import failed", e);
+    return false;
+  }
+};

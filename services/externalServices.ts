@@ -515,7 +515,8 @@ async function updateImageAltText(cleanWp: string, auth: string, id: number, alt
 }
 
 export async function publishToRealWordpress(
-    wpUrl: string, username: string, appPassword: string, payload: any
+    wpUrl: string, username: string, appPassword: string, payload: any,
+    sourceUrl?: string // New Parameter for Tracking
 ) {
     const cleanWp = normalizeWpUrl(wpUrl);
     const auth = btoa(`${username}:${appPassword}`);
@@ -531,21 +532,38 @@ export async function publishToRealWordpress(
         slug: payload.slug
     };
 
+    // Metadata Object
+    const meta: any = {};
+
+    // Source Tracking Meta (For Persistence)
+    if (sourceUrl) {
+        meta.autoblog_source_url = sourceUrl;
+        meta.autoblog_processed_date = new Date().toISOString();
+    }
+
+    // SEO Meta
     if (payload.seo?.plugin === SeoPlugin.YOAST) {
-         body.meta = {
-             _yoast_wpseo_focuskw: payload.seo.focusKeyphrase,
-             _yoast_wpseo_metadesc: payload.seo.metaDescription,
-             _yoast_wpseo_title: payload.seo.seoTitle,
-             _yoast_wpseo_focuskw_text_input: payload.seo.focusKeyphrase,
-             _yoast_wpseo_desc: payload.seo.metaDescription
-         };
+        meta._yoast_wpseo_focuskw = payload.seo.focusKeyphrase;
+        meta._yoast_wpseo_metadesc = payload.seo.metaDescription;
+        meta._yoast_wpseo_title = payload.seo.seoTitle;
+        meta._yoast_wpseo_focuskw_text_input = payload.seo.focusKeyphrase;
+        meta._yoast_wpseo_desc = payload.seo.metaDescription;
          
-         // Synonyms handling (Max compatibility)
-         if (payload.seo.synonyms) {
-            body.meta._yoast_wpseo_focuskw_synonyms = payload.seo.synonyms;
-            // Legacy/Alternate key used by some versions
-            body.meta._yoast_wpseo_keywordsynonyms = payload.seo.synonyms; 
-         }
+        // Synonyms
+        if (payload.seo.synonyms) {
+           meta._yoast_wpseo_focuskw_synonyms = payload.seo.synonyms;
+           meta._yoast_wpseo_keywordsynonyms = payload.seo.synonyms; 
+        }
+    }
+    else if (payload.seo?.plugin === SeoPlugin.RANK_MATH) {
+        meta.rank_math_focus_keyword = payload.seo.focusKeyphrase;
+        meta.rank_math_title = payload.seo.seoTitle;
+        meta.rank_math_description = payload.seo.metaDescription;
+    }
+
+    // Attach Meta if not empty
+    if (Object.keys(meta).length > 0) {
+        body.meta = meta;
     }
 
     try {
