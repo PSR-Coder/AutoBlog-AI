@@ -69,6 +69,8 @@ export interface Campaign {
   schedule_start_hour: number; // 0-23
   schedule_end_hour: number; // 0-23
   min_interval_minutes: number;
+  batch_size?: number;
+  delay_seconds?: number;
 
   // Meta
   last_run_at?: string;

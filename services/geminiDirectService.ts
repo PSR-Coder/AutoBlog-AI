@@ -85,8 +85,21 @@ export const generatePostFromUrl = async (
     const text = response.text;
     if (!text) throw new Error("Empty response from AI");
 
-    const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
-    return JSON.parse(jsonStr) as AiResponse;
+    // Robust JSON Extraction (Substrings > Regex)
+    const jsonStart = text.indexOf('{');
+    const jsonEnd = text.lastIndexOf('}');
+
+    if (jsonStart === -1 || jsonEnd === -1) {
+        throw new Error("AI did not return a valid JSON object. Raw response: " + text.substring(0, 50) + "...");
+    }
+
+    const jsonStr = text.substring(jsonStart, jsonEnd + 1);
+    
+    try {
+        return JSON.parse(jsonStr) as AiResponse;
+    } catch (e) {
+        throw new Error("Failed to parse extracted JSON string: " + (e as Error).message);
+    }
 
   } catch (error) {
     console.error("Gemini Direct API Error:", error);

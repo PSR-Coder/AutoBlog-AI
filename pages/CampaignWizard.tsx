@@ -34,6 +34,20 @@ Requirements:
 4. Structure: HTML format with <h2>, <p>, <ul> tags.
 5. Key Takeaways: Include a bulleted list at the top.`;
 
+// Helper to convert ISO string (UTC) to local datetime-local input string
+const toLocalISOString = (isoString?: string) => {
+  if (!isoString) return '';
+  try {
+    const date = new Date(isoString);
+    if (isNaN(date.getTime())) return '';
+    const offset = date.getTimezoneOffset() * 60000;
+    const localISOTime = (new Date(date.getTime() - offset)).toISOString().slice(0, 16);
+    return localISOTime;
+  } catch (e) {
+    return '';
+  }
+};
+
 const CampaignWizard: React.FC = () => {
   const navigate = useNavigate();
   const { id } = useParams<{ id: string }>(); 
@@ -50,7 +64,7 @@ const CampaignWizard: React.FC = () => {
     name: '',
     source_url: '',
     source_type: 'RSS',
-    start_date: new Date().toISOString().split('T')[0], // Default to today
+    start_date: new Date().toISOString(), // Default to now
     url_keywords: '',
     wordpress_site: { site_url: '', username: '', application_password: '', status: 'pending' },
     processing_mode: ProcessingMode.AS_IS,
@@ -63,6 +77,8 @@ const CampaignWizard: React.FC = () => {
     schedule_start_hour: 10,
     schedule_end_hour: 22,
     min_interval_minutes: 60,
+    batch_size: 5,
+    delay_seconds: 10,
     seo_plugin: SeoPlugin.NONE,
     post_status: 'draft',
     status: 'active',
@@ -100,6 +116,20 @@ const CampaignWizard: React.FC = () => {
 
   const updateField = (field: keyof Campaign, value: any) => {
     setFormData(prev => ({ ...prev, [field]: value }));
+  };
+
+  const handleDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const val = e.target.value;
+      if (!val) return;
+      try {
+          // Convert local time back to UTC ISO
+          const date = new Date(val);
+          if (!isNaN(date.getTime())) {
+              updateField('start_date', date.toISOString());
+          }
+      } catch (e) {
+          console.error("Invalid date", e);
+      }
   };
 
   const updateWpField = (field: string, value: string) => {
@@ -298,8 +328,8 @@ const CampaignWizard: React.FC = () => {
                         </label>
                         <input
                             type="datetime-local"
-                            value={formData.start_date ? formData.start_date.substring(0, 16) : ''}
-                            onChange={(e) => updateField('start_date', new Date(e.target.value).toISOString())}
+                            value={toLocalISOString(formData.start_date)}
+                            onChange={handleDateChange}
                             className="w-full px-4 py-2 border border-slate-300 dark:border-slate-700 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-white dark:bg-slate-950 text-slate-900 dark:text-white"
                         />
                         <p className="text-xs text-slate-500 mt-1">Only process posts published after this date.</p>
@@ -664,6 +694,32 @@ const CampaignWizard: React.FC = () => {
                             onChange={(e) => updateField('min_interval_minutes', parseInt(e.target.value))}
                             className="w-full px-4 py-2 border border-slate-300 dark:border-slate-700 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-white dark:bg-slate-950 text-slate-900 dark:text-white"
                         />
+                    </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-50 dark:bg-slate-800/30 p-4 rounded-lg border border-slate-200 dark:border-slate-700">
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Posts per Run (Batch Size)</label>
+                        <input
+                            type="number"
+                            min={1}
+                            max={20}
+                            value={formData.batch_size || 5}
+                            onChange={(e) => updateField('batch_size', parseInt(e.target.value))}
+                            className="w-full px-4 py-2 border border-slate-300 dark:border-slate-700 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-white dark:bg-slate-950 text-slate-900 dark:text-white"
+                        />
+                         <p className="text-xs text-slate-500 mt-1">Number of posts to process in one scheduled interval.</p>
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Delay between Posts (Seconds)</label>
+                        <input
+                            type="number"
+                            min={5}
+                            value={formData.delay_seconds || 10}
+                            onChange={(e) => updateField('delay_seconds', parseInt(e.target.value))}
+                            className="w-full px-4 py-2 border border-slate-300 dark:border-slate-700 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-white dark:bg-slate-950 text-slate-900 dark:text-white"
+                        />
+                        <p className="text-xs text-slate-500 mt-1">Wait time to prevent browser freezing.</p>
                     </div>
                 </div>
                 

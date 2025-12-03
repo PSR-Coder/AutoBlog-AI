@@ -154,7 +154,8 @@ const Dashboard: React.FC = () => {
       // 4. Process Loop
       // We will process posts one by one until we hit a limit or empty the queue
       let processedCount = 0;
-      const BATCH_LIMIT = 5; // Safety limit per run to avoid browser timeouts
+      const BATCH_LIMIT = campaign.batch_size || 5; 
+      const DELAY_MS = (campaign.delay_seconds || 10) * 1000;
       
       for (const candidate of validCandidates) {
           if (processedCount >= BATCH_LIMIT) {
@@ -170,7 +171,7 @@ const Dashboard: React.FC = () => {
           
           processedCount++;
           // Small delay between posts
-          await new Promise(resolve => setTimeout(resolve, 2000));
+          await new Promise(resolve => setTimeout(resolve, DELAY_MS));
       }
 
       addLog(`Batch Run Completed. Processed ${processedCount} posts.`, 'success');
