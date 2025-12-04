@@ -328,7 +328,9 @@ const Dashboard: React.FC = () => {
                       metaDescription: seoData.metaDescription,
                       synonyms: seoData.synonyms
                   }
-              }
+              },
+              url, // Pass Source URL for tracking
+              (msg, type) => log(msg, type) // Pass Logger
           );
 
           if (publishResult.success) {

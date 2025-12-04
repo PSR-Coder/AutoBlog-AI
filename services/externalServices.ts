@@ -515,11 +515,18 @@ async function updateImageAltText(cleanWp: string, auth: string, id: number, alt
 }
 
 export async function publishToRealWordpress(
-    wpUrl: string, username: string, appPassword: string, payload: any,
-    sourceUrl?: string // New Parameter for Tracking
+    wpUrl: string, 
+    username: string, 
+    appPassword: string, 
+    payload: any,
+    sourceUrl?: string,
+    log?: Logger
 ) {
     const cleanWp = normalizeWpUrl(wpUrl);
     const auth = btoa(`${username}:${appPassword}`);
+    const logFn = (msg: string, type: 'info'|'success'|'warning'|'error' = 'info') => {
+        if (log) log(msg, type);
+    };
     
     const endpoint = `${cleanWp}/wp-json/wp/v2/posts`;
     
@@ -543,19 +550,20 @@ export async function publishToRealWordpress(
 
     // SEO Meta
     if (payload.seo?.plugin === SeoPlugin.YOAST) {
-        meta._yoast_wpseo_focuskw = payload.seo.focusKeyphrase;
-        meta._yoast_wpseo_metadesc = payload.seo.metaDescription;
-        meta._yoast_wpseo_title = payload.seo.seoTitle;
-        meta._yoast_wpseo_focuskw_text_input = payload.seo.focusKeyphrase;
-        meta._yoast_wpseo_desc = payload.seo.metaDescription;
-         
-        // Synonyms
-        if (payload.seo.synonyms) {
-           meta._yoast_wpseo_focuskw_synonyms = payload.seo.synonyms;
-           meta._yoast_wpseo_keywordsynonyms = payload.seo.synonyms; 
+        logFn(`Injecting Yoast SEO Metadata...`, 'info');
+        // STRICT Keys only
+        if (payload.seo.focusKeyphrase) {
+             meta._yoast_wpseo_focuskw = payload.seo.focusKeyphrase;
+        }
+        if (payload.seo.metaDescription) {
+            meta._yoast_wpseo_metadesc = payload.seo.metaDescription;
+        }
+        if (payload.seo.seoTitle) {
+            meta._yoast_wpseo_title = payload.seo.seoTitle;
         }
     }
     else if (payload.seo?.plugin === SeoPlugin.RANK_MATH) {
+        logFn(`Injecting RankMath SEO Metadata...`, 'info');
         meta.rank_math_focus_keyword = payload.seo.focusKeyphrase;
         meta.rank_math_title = payload.seo.seoTitle;
         meta.rank_math_description = payload.seo.metaDescription;
